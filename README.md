@@ -1,3 +1,4 @@
+![流程图](docs/代码流程图.png)
 # 发布订单
 ## 请求路径：POST /seckill
 ## 请求参数：application/json
