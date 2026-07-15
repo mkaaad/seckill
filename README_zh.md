@@ -116,19 +116,35 @@ GET /order?product_id=1001&user_id=5001
 ```
 
 **响应：**
-- `200 OK`: `{"info": "订单创建成功", "order": {"product_id": 1001, "user_id": 5001}}`（订单创建成功）
+- `200 OK`: `{"info": "订单创建成功", "status": "pending", "order": {"product_id": 1001, "user_id": 5001}}`（已扣库存并投递 Kafka，状态缓存为 pending）
 - `400 Bad Request`: 各种错误信息（参数无效、秒杀未开始、库存不足等）
 - `429 Too Many Requests`: `{"info": "请求过于频繁，稍后再试"}`（请求频率过高）
 - `500 Internal Server Error`: `{"info": "服务器内部错误"}`（服务器内部错误）
 
-### 订单状态查询（未实现）
+### 订单状态查询
 **GET** `/order/search`
 
-*注意：此端点已文档化，但当前代码库中尚未实现。*
+使用 Redis 缓存订单状态（Cache-Aside）：
+
+1. 下单 Kafka 成功后：`SET order:status:{userId}:{productId} = pending`（TTL 15min）
+2. Store **落库成功**：`DEL` 该 key → 下次查询 miss 回源 MySQL → `success`
+3. Store **落库失败**：`SET failed`（不 DEL，避免被误判为未下单），并 `INCR` 回补商品库存（尽力补偿，非严格幂等）
 
 | 名称 (Name) | 位置 (Location) | 类型 (Type) | 必选 (Required) | 说明 (Description) |
 | :---------- | :-------------- | :---------- | :-------------- | :----------------- |
 | user_id     | query           | int         | 是 (Yes)        | 用户ID (User ID) |
+| product_id  | query           | int         | 是 (Yes)        | 商品ID (Product ID) |
+
+**请求示例：**
+```
+GET /order/search?user_id=5001&product_id=1001
+```
+
+**响应：**
+- `200` + `status: pending`：已受理，尚未确认落库
+- `200` + `status: success`：MySQL 已有订单
+- `200` + `status: failed`：写库失败（缓存标记）
+- `404` + `status: not_found`：无缓存且库中无单
 
 ## 项目结构
 
@@ -168,8 +184,8 @@ cd ../order-store-service && go build ./cmd
 
 ### 依赖
 每个服务通过 `go.mod` 管理自己的依赖：
-- **order-create-service**: Gin（HTTP）、go-redis（Redis）、sarama（Kafka 生产者）
-- **order-store-service**: GORM（MySQL）、sarama（Kafka 消费者）
+- **order-create-service**: Gin（HTTP）、go-redis（Redis）、sarama（Kafka 生产者）、GORM（MySQL 只读查单）
+- **order-store-service**: GORM（MySQL）、sarama（Kafka 消费者）、go-redis（状态缓存删除 / 失败标记）
 
 ### 日志记录
 - 两个服务都将日志写入各自目录下的 `app.log` 文件
@@ -192,7 +208,7 @@ cd ../order-store-service && go build ./cmd
 3. **无优雅关机**：服务不处理 SIGTERM/SIGINT 信号
 4. **无健康检查**：缺少就绪/存活端点
 5. **中文错误信息**：错误响应仅使用中文
-6. **缺少 `/order/search` 端点**：已文档化但未实现
+6. **写库失败库存回补非严格幂等**：消息重复消费或失败后重试成功时，INCR 回补可能不精确
 
 ## 贡献指南
 

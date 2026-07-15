@@ -118,8 +118,14 @@ func PlaceOrder(c *gin.Context) {
 		logs.WriteLog(err)
 		return
 	}
+	// Kafka 成功后写入 pending 状态缓存；落库成功后由 store 删缓存，失败则改为 failed
+	if err = dao.Rdb.Set(ctx, orderStatusKey(order.UserId, order.ProductId), model.StatusPending, orderStatusTTL).Err(); err != nil {
+		logs.WriteLog(err)
+		// 缓存失败不阻断下单响应，查询可回源 MySQL
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"info":  "订单创建成功",
-		"order": order,
+		"info":   "订单创建成功",
+		"status": model.StatusPending,
+		"order":  order,
 	})
 }

@@ -116,19 +116,35 @@ GET /order?product_id=1001&user_id=5001
 ```
 
 **Responses:**
-- `200 OK`: `{"info": "订单创建成功", "order": {"product_id": 1001, "user_id": 5001}}` (Order created successfully)
+- `200 OK`: `{"info": "订单创建成功", "status": "pending", "order": {"product_id": 1001, "user_id": 5001}}` (stock decremented, message on Kafka, status cached as pending)
 - `400 Bad Request`: Various error messages (invalid parameters, sale not active, insufficient stock)
 - `429 Too Many Requests`: `{"info": "请求过于频繁，稍后再试"}` (Rate limit exceeded)
 - `500 Internal Server Error`: `{"info": "服务器内部错误"}` (Internal server error)
 
-### Order Status Query (Not Implemented)
+### Order Status Query
 **GET** `/order/search`
 
-*Note: This endpoint is documented but not yet implemented in the current codebase.*
+Redis-backed order status (cache-aside):
+
+1. After Kafka send succeeds: `SET order:status:{userId}:{productId} = pending` (TTL 15m)
+2. Store **MySQL insert OK**: `DEL` the key → next query misses cache and loads `success` from MySQL
+3. Store **MySQL insert fails**: `SET failed` (do not DEL, so it is not mistaken for not_found), and `INCR` stock as best-effort compensation (not strictly idempotent)
 
 | 名称 (Name) | 位置 (Location) | 类型 (Type) | 必选 (Required) | 说明 (Description) |
 | :---------- | :-------------- | :---------- | :-------------- | :----------------- |
 | user_id     | query           | int         | 是 (Yes)        | 用户ID (User ID) |
+| product_id  | query           | int         | 是 (Yes)        | 商品ID (Product ID) |
+
+**Example Request:**
+```
+GET /order/search?user_id=5001&product_id=1001
+```
+
+**Responses:**
+- `200` + `status: pending` — accepted, not yet confirmed in DB
+- `200` + `status: success` — row exists in MySQL
+- `200` + `status: failed` — persist failed (cached marker)
+- `404` + `status: not_found` — no cache and no DB row
 
 ## Project Structure
 
