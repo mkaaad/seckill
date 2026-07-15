@@ -13,9 +13,10 @@ type Product struct {
 }
 
 // Order is the payload sent to Kafka and stored in MySQL.
+// Unique (user_id, product_id) enforces at-most-one order per user per product.
 type Order struct {
-	ProductId int `json:"product_id" gorm:"not null"`
-	UserId    int `json:"user_id" gorm:"not null"`
+	ProductId int `json:"product_id" gorm:"not null;uniqueIndex:uk_user_product"`
+	UserId    int `json:"user_id" gorm:"not null;uniqueIndex:uk_user_product"`
 }
 
 // Order status values for Redis cache / search API.

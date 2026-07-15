@@ -3,11 +3,27 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"order-store/dao"
 	"order-store/logs"
 	"order-store/model"
+
+	"github.com/go-sql-driver/mysql"
+	"gorm.io/gorm"
 )
+
+func isDuplicateKey(err error) bool {
+	if err == nil {
+		return false
+	}
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		return true
+	}
+	// GORM may wrap driver errors
+	return errors.Is(err, gorm.ErrDuplicatedKey)
+}
 
 func WriteToMysql() {
 	var order model.Order
@@ -27,10 +43,19 @@ func WriteToMysql() {
 		result := dao.Db.Create(&order)
 		key := orderStatusKey(order.UserId, order.ProductId)
 		if result.Error != nil {
+			// 唯一冲突：消息重投 / 重复消费，订单已存在 → 幂等成功，只删缓存，不回补库存
+			if isDuplicateKey(result.Error) {
+				log.Printf("订单已存在（幂等），product_id=%d user_id=%d\n", order.ProductId, order.UserId)
+				if err := dao.Rdb.Del(ctx, key).Err(); err != nil {
+					log.Println("删除订单状态缓存失败:", err)
+					logs.WriteLog(err)
+				}
+				continue
+			}
 			log.Println(result.Error)
 			logs.WriteLog(result.Error)
 			logs.WriteData(order)
-			// 写库失败：不能 DEL（否则查询会变成 not_found），标记 failed 并尽力回补库存
+			// 真失败：标记 failed + 回补库存（不能 DEL，避免查成 not_found）
 			if err := dao.Rdb.Set(ctx, key, model.StatusFailed, orderStatusTTL).Err(); err != nil {
 				log.Println("标记订单 failed 失败:", err)
 				logs.WriteLog(err)

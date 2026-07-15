@@ -13,6 +13,16 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+// Atomic stock deduct: DECR + restore if negative in one Lua script.
+const deductStockLua = `
+local s = redis.call('DECR', KEYS[1])
+if s < 0 then
+  redis.call('INCR', KEYS[1])
+  return -1
+end
+return s
+`
+
 func PlaceOrder(c *gin.Context) {
 	ctx := context.Background()
 	var order model.Order
@@ -92,8 +102,9 @@ func PlaceOrder(c *gin.Context) {
 		})
 		return
 	}
-	//检查库存是否有剩余，利用自减实现原子化操作
-	stock, err := dao.Rdb.Decr(ctx, productId).Result()
+
+	// Lua 原子扣库存（避免 DECR 后 INCR 回补的竞态）
+	stock, err := dao.Rdb.Eval(ctx, deductStockLua, []string{productId}).Int64()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"info": "服务器内部错误",
@@ -101,17 +112,19 @@ func PlaceOrder(c *gin.Context) {
 		logs.WriteLog(err)
 		return
 	}
-	//如果库存不足，把多减的库存加回来并提示库存不足
 	if stock < 0 {
-		dao.Rdb.Incr(ctx, productId)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"info": "库存不足",
 		})
 		return
 	}
-	//所有被放行的流量将写入kafka
+
+	// 投递 Kafka；失败则回补库存，不写 pending
 	err = sendMessage(order)
 	if err != nil {
+		if _, incrErr := dao.Rdb.Incr(ctx, productId).Result(); incrErr != nil {
+			logs.WriteLog(incrErr)
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"info": "服务器内部错误",
 		})

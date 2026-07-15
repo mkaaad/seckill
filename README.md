@@ -20,11 +20,12 @@ Client → [order-create-service:8080] → Redis (inventory/rate limit) → Kafk
 ```
 
 ### Key Features
-- **Atomic inventory management** using Redis `DECR` operation
+- **Lua atomic stock deduct**: `DECR` + restore-if-negative in one script (no race)
 - **Rate limiting** (1 request per second per user) via Redis TTL keys
-- **Asynchronous order processing** through Kafka message queue
-- **Separate read/write concerns** with independent microservices
-- **File-based logging** for error tracking
+- **Async orders via Kafka**: shared **SyncProducer** singleton; on send failure, restore stock
+- **Consumer idempotency**: unique `(user_id, product_id)` in MySQL; redelivery does not double-insert or double-restore stock
+- **Order status cache**: pending → DEL on success (read MySQL as success); SET failed + restore stock on persist error
+- **Hot/cold path split**: Create handles hot requests; Store only persists
 
 ## Prerequisites
 
@@ -184,8 +185,8 @@ cd ../order-store-service && go build ./cmd
 
 ### Dependencies
 Each service manages its own dependencies via `go.mod`:
-- **order-create-service**: Gin (HTTP), go-redis (Redis), sarama (Kafka producer)
-- **order-store-service**: GORM (MySQL), sarama (Kafka consumer)
+- **order-create-service**: Gin (HTTP), go-redis (Redis), sarama (Kafka producer), GORM (MySQL read for status)
+- **order-store-service**: GORM (MySQL), sarama (Kafka consumer), go-redis (status cache delete / failed mark)
 
 ### Logging
 - Both services write logs to `app.log` in their respective directories
@@ -208,7 +209,7 @@ Each service manages its own dependencies via `go.mod`:
 3. **No graceful shutdown** - Services don't handle SIGTERM/SIGINT
 4. **No health checks** - Missing readiness/liveness endpoints
 5. **Chinese error messages** - Error responses are in Chinese only
-6. **Missing `/order/search` endpoint** - Documented but not implemented
+6. **Stock restore on persist failure is not strictly idempotent** - redelivery / retry after fail may over-INCR
 
 ## Contributing
 
