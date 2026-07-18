@@ -13,6 +13,8 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+// time import still used by startTime check below
+
 // Atomic stock deduct: DECR + restore if negative in one Lua script.
 const deductStockLua = `
 local s = redis.call('DECR', KEYS[1])
@@ -34,7 +36,8 @@ func PlaceOrder(c *gin.Context) {
 		})
 		return
 	}
-	n, err := dao.Rdb.Exists(ctx, "history"+userId).Result()
+	// 令牌桶限流（每用户 capacity=5 突发，rate=1 token/s 补充）
+	ok, _, err := allowTokenBucket(ctx, userId)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"info": "服务器内部错误",
@@ -42,18 +45,7 @@ func PlaceOrder(c *gin.Context) {
 		logs.WriteLog(err)
 		return
 	}
-	//如果此用户在特定时间段内没有请求过，放行，并写入访问历史
-	if n == 0 {
-		//访问历史在特定时间后过期
-		err = dao.Rdb.Set(ctx, "history"+userId, 1, time.Second).Err()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"info": "服务器内部错误",
-			})
-			logs.WriteLog(err)
-			return
-		}
-	} else {
+	if !ok {
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"info": "请求过于频繁，稍后再试",
 		})

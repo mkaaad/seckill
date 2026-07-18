@@ -21,7 +21,7 @@ Client → [order-create-service:8080] → Redis (inventory/rate limit) → Kafk
 
 ### Key Features
 - **Lua atomic stock deduct**: `DECR` + restore-if-negative in one script (no race)
-- **Rate limiting** (1 request per second per user) via Redis TTL keys
+- **Token-bucket rate limiting** per user via Redis Lua (capacity=5 burst, rate=1 token/s)
 - **Async orders via Kafka**: shared **SyncProducer** singleton; on send failure, restore stock
 - **Consumer idempotency**: unique `(user_id, product_id)` in MySQL; redelivery does not double-insert or double-restore stock
 - **Order status cache**: pending → DEL on success (read MySQL as success); SET failed + restore stock on persist error

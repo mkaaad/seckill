@@ -123,7 +123,7 @@ No test files (`*_test.go`) are present in the repository. To add tests, follow 
 - Connections are initialized in `dao.ClientDB()` and stored in global variables (`Rdb`, `Db`).
 - The order-create-service uses Redis for:
   - Storing product stock with expiration tied to flash sale end time.
-  - Rate limiting per user (1 request per second using key `"history"+userId`).
+  - Token-bucket rate limiting per user (Redis Lua: `tb:tokens:{userId}` + `tb:ts:{userId}`, capacity=5, rate=1/s).
 - The order-store-service uses GORM with auto‑migration for the `Order` table.
 
 ### Kafka Integration
@@ -143,7 +143,7 @@ No test files (`*_test.go`) are present in the repository. To add tests, follow 
 
 3. **Log File Location**: Each service writes to `app.log` in its own working directory. Ensure write permissions.
 
-4. **Rate Limiting**: The order‑create‑service limits each user to one request per second using a Redis key with a 1‑second TTL.
+4. **Rate Limiting**: Per-user Redis token bucket (Lua atomic refill + take). Default capacity=5, refill rate=1 token/s.
 
 5. **Inventory Management**: Stock decrement is atomic via `Redis.Decr`. If stock goes negative, it is incremented back and the request is rejected.
 
